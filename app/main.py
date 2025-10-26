@@ -1,6 +1,6 @@
 import uvicorn
 import numpy as np
-import re, json, time
+import re, json, time, statistics, collections
 from pathlib import Path
 from typing import List, Dict, Tuple
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -15,6 +15,79 @@ from .admin_docs import router as admin_docs_router
 
 app = FastAPI(title="ElderlyCare HK — Backend")
 app.include_router(admin_docs_router)
+
+_LOG_DIR = Path("data/logs")
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_USAGE_LOG = _LOG_DIR / "chat_usage.jsonl"
+
+def _append_jsonl_safe(path: Path, obj: dict):
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+_FB_DIR = Path("data/feedback")
+_FB_DIR.mkdir(parents=True, exist_ok=True)
+_FB_JSONL = _FB_DIR / "feedback.jsonl"         # 已存在：主反馈日志
+_FB_METRICS = _FB_DIR / "metrics.json"         # 已存在：聚合指标
+_FB_COUNTS = _FB_DIR / "penalty_counts.json"   # 新增：按页计数 { (file,page): {up,down} }
+_FB_PENALTY = _FB_DIR / "penalty.json"         # 已存在于 rag；我们会即时生成/更新
+
+def _safe_read_json(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+def _write_json_atomic(path: Path, obj: dict):
+    tmp = path.with_suffix(path.suffix + ".part")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+def _recompute_penalty_from_counts(counts: dict) -> dict:
+    """
+    把 { "file::page": {"up":x,"down":y}, ... } 转成 { "file::page": penalty_float }
+    简单规则：penalty = min(1.0, BASE + STEP * max(0, down - up))
+    你也可以换成更平滑的函数（例如 sigmoid）。
+    """
+    BASE, STEP = 0.10, 0.05   # 可按需要微调
+    out = {}
+    for k, v in counts.items():
+        up = int(v.get("up", 0))
+        down = int(v.get("down", 0))
+        excess = max(0, down - up)
+        pen = min(1.0, BASE + STEP * excess)
+        if pen > 0:
+            out[k] = round(pen, 4)
+    return out
+
+def _bump_counts_and_penalty(recs: list[dict]):
+    """
+    根据这次反馈里附带的 citations 批量更新 counts 与 penalty。
+    recs: [{ "file": "...", "page": 12 }, ...]
+    """
+    counts = _safe_read_json(_FB_COUNTS, {})
+    # 每条 citation 累计 up/down；由调用者决定当前反馈是 up 还是 down
+    def inc(key: str, field: str):
+        row = counts.get(key) or {}
+        row[field] = int(row.get(field, 0)) + 1
+        counts[key] = row
+
+    # 上层会把 label 透传进来；这里不区分每条 citation 的 label
+    for r in recs:
+        file = r.get("file")
+        page = r.get("page")
+        if not file:
+            continue
+        key = f"{file}::{page}"
+        # 占位，实际增量在调用处做（见 feedback_in 内）
+        counts.setdefault(key, counts.get(key, {"up": 0, "down": 0}))
+
+    return counts, inc
 
 _CITE_TAG_RE = re.compile(r"\[Source\s+(\d+)\]")
 _PRONOUN_PAT = re.compile(r"\b(it|its|this|that|they|their)\b|[它其這該]")
@@ -220,8 +293,6 @@ _GENERIC_TEMPLATES = [
 
 _GENERIC_EMB: np.ndarray | None = None  # 懒加载缓存
 
-
-
 def _ensure_generic_emb() -> np.ndarray:
     global _GENERIC_EMB
     if _GENERIC_EMB is None:
@@ -334,15 +405,163 @@ def _bump_metrics(label: str):
     m[label] = m.get(label, 0) + 1
     _METRICS_PATH.write_text(json.dumps(m), encoding="utf-8")
 
+def _iter_feedback_jsonl():
+    if not _FB_JSONL.exists():
+        return
+    for line in _FB_JSONL.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            yield json.loads(line)
+        except Exception:
+            continue
+
+import datetime as _dt
+def _iter_usage():
+    if not _USAGE_LOG.exists():
+        return
+    for line in _USAGE_LOG.read_text(encoding="utf-8").splitlines():
+        if not line.strip(): 
+            continue
+        try:
+            yield json.loads(line)
+        except Exception:
+            continue
+
+@app.get("/metrics/usage")
+def metrics_usage(days: int = 7, _auth=Depends(require_bearer)):
+    """
+    基础使用统计：最近 N 天（默认 7）
+    返回总请求数 / clarifications / 无命中 / 平均与P95时延 / 关键词Top-N（英文/数字简单切词）
+    """
+    now_ms = _now_ms()
+    cutoff = now_ms - int(days) * 24 * 60 * 60 * 1000
+
+    total = 0
+    clarified = 0
+    nohit = 0
+    found = 0
+    durs = []
+    ans_lens = []
+    word_counter = collections.Counter()
+    per_day = collections.Counter()  # YYYY-MM-DD -> count
+
+    for r in _iter_usage() or []:
+        ts = r.get("ts")
+        if isinstance(ts, (int, float)) and ts < cutoff:
+            continue
+        total += 1
+        if r.get("clarified"): clarified += 1
+        if not r.get("found"): nohit += 1
+        else: found += 1
+        dur = r.get("duration_ms")
+        if isinstance(dur, (int, float)) and dur >= 0:
+            durs.append(float(dur))
+        al = r.get("answer_len")
+        if isinstance(al, int):
+            ans_lens.append(al)
+        # 简单关键词（英文/数字），如需中英文混合可在此处替换为更好的分词逻辑
+        q = r.get("user_query") or ""
+        for w in re.findall(r"[A-Za-z0-9]{3,}", q):
+            word_counter[w.lower()] += 1
+
+        # day bucket
+        if isinstance(ts, (int, float)):
+            day = _dt.datetime.utcfromtimestamp(ts/1000.0).strftime("%Y-%m-%d")
+            per_day[day] += 1
+
+    avg_dur = statistics.mean(durs) if durs else None
+    p95_dur = (statistics.quantiles(durs, n=20)[18] if len(durs) >= 20 else (max(durs) if durs else None))
+    avg_ans = statistics.mean(ans_lens) if ans_lens else None
+
+    top_keywords = [{"term": k, "count": v} for k, v in word_counter.most_common(20)]
+    series = [{"day": d, "count": c} for d, c in sorted(per_day.items())]
+
+    return {
+        "window_days": int(days),
+        "total": total,
+        "found": found,
+        "nohit": nohit,
+        "clarified": clarified,
+        "avg_duration_ms": round(avg_dur, 2) if avg_dur is not None else None,
+        "p95_duration_ms": round(p95_dur, 2) if p95_dur is not None else None,
+        "avg_answer_len": round(avg_ans, 2) if avg_ans is not None else None,
+        "top_keywords": top_keywords,
+        "daily_series": series,
+        "updated": now_ms
+    }
+
+@app.get("/feedback/metrics")
+def feedback_metrics(days: int = 7, _auth=Depends(require_bearer)):
+    """
+    返回最近 N 天的 up/down 统计与 up-rate。days 默认 7。
+    数据源：data/feedback/feedback.jsonl
+    """
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - int(days) * 24 * 60 * 60 * 1000
+
+    up = down = total = 0
+    for rec in _iter_feedback_jsonl() or []:
+        ts = rec.get("ts")  # 我们写入的是毫秒时间戳
+        if isinstance(ts, (int, float)):
+            if ts < cutoff_ms:
+                continue
+        # 无时间戳的老数据：可以选择纳入或跳过；这里纳入
+        if rec.get("label") == "up":
+            up += 1
+        elif rec.get("label") == "down":
+            down += 1
+        total += 1
+
+    uprate = (up / total) if total > 0 else 0.0
+    return {
+        "days": int(days),
+        "up": up,
+        "down": down,
+        "total": total,
+        "uprate": round(uprate, 4),
+        "updated": now_ms
+    }
+
 @app.post("/feedback")
 async def feedback_in(body: FeedbackIn, _auth=Depends(require_bearer)):
     rec = body.model_dump()
     rec["ts"] = int(time.time() * 1000)
+
+    # 1) 先写主日志 & 聚合计数（与你现有逻辑一致）
     try:
         _append_jsonl(_FEEDBACK_PATH, rec)
         _bump_metrics(body.label)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"write feedback failed: {e}")
+
+    # 2) 即时把这条反馈“转译”为页级 counts & penalty，立刻生效
+    try:
+        # 载入现有 counts，并得到一个累加器 inc()
+        counts, inc = _bump_counts_and_penalty(rec.get("citations") or [])
+        # 对本条反馈对应的所有 citation 做 up/down 增量
+        fld = "up" if body.label == "up" else "down"
+        for c in rec.get("citations") or []:
+            file = c.get("file")
+            page = c.get("page")
+            if not file:
+                continue
+            key = f"{file}::{page}"
+            # 初始化如果不存在
+            if key not in counts:
+                counts[key] = {"up": 0, "down": 0}
+            counts[key][fld] = int(counts[key].get(fld, 0)) + 1
+
+        # 写回 counts
+        _write_json_atomic(_FB_COUNTS, counts)
+
+        # 计算/写回 penalty.json —— rag.hybrid_retrieve 会在下一次检索时读取
+        penalty = _recompute_penalty_from_counts(counts)
+        _write_json_atomic(_FB_PENALTY, penalty)
+    except Exception as e:
+        # 不中断主流程；只是记录这次“即时惩罚更新”失败
+        print(f"[WARN] feedback penalty update failed: {e}")
+
     return {"ok": True}
 
 @app.middleware("http")
@@ -672,6 +891,22 @@ async def chat(req: ChatRequest, _auth=Depends(require_bearer)):
             )
         })
 
+    try:
+        Path("data/logs").mkdir(parents=True, exist_ok=True)
+        rec = {
+            "ts": int(time.time() * 1000),
+            "lang": req.language,
+            "user_query": user_query,
+            "context_hits": len(contexts),
+            "answer_len": len(answer_text),
+            "citations": citations,
+            "clarified": _should_clarify_smart(user_query),
+        }
+        with open("data/logs/chat_usage.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # 不影响主流程
+
     if req.stream:
         async def event_stream():
             buffer = ""
@@ -684,49 +919,47 @@ async def chat(req: ChatRequest, _auth=Depends(require_bearer)):
             cites = _citations_by_usage(clean_final, contexts)
             trailer = "CITATIONS:" + json.dumps(cites, ensure_ascii=False)
             yield "\n" + trailer + "\n"
+        # === 发送完毕后记录 usage 日志 ===
+        try:
+            _append_jsonl_safe(_USAGE_LOG, {
+                "ts": _now_ms(),
+                "lang": req.language,
+                "duration_ms": None,
+                "user_query": user_query,
+                "clarified": _should_clarify_smart(user_query) and not _looks_specific(user_query, contexts),
+                "context_hits": len(contexts),
+                "found": len(contexts) >= settings.min_sources_required,
+                "answer_len": len(clean_final or ""),
+                "citations_cnt": len(cites or []),
+                "stream": True
+            })
+        except Exception:
+            pass
+
         return StreamingResponse(event_stream(), media_type="text/plain")
 
     data = await smartcare_chat(prompt_msgs)
     answer_text = _normalize_answer_text(_extract_answer_text(data))
     answer_text = _sanitize_inline_citations(answer_text, len(contexts))
     citations = _citations_by_usage(answer_text, contexts)
+
+    try:
+        _append_jsonl_safe(_USAGE_LOG, {
+            "ts": _now_ms(),
+            "lang": req.language,
+            "duration_ms": None,
+            "user_query": user_query,
+            "clarified": _should_clarify_smart(user_query) and not _looks_specific(user_query, contexts),
+            "context_hits": len(contexts),
+            "found": len(contexts) >= settings.min_sources_required,
+            "answer_len": len(answer_text or ""),
+            "citations_cnt": len(citations or []),
+            "stream": False
+        })
+    except Exception:
+        pass
+
     return ChatAnswer(answer=answer_text, citations=citations)
-
-# from fastapi.responses import PlainTextResponse
-# @app.post("/chat/plain", response_class=PlainTextResponse)
-# async def chat_plain(req: ChatRequest):
-#     idx = get_index()
-#     emb = get_embedder()
-
-#     # ========= 新增：构造 msgs 并判断是否使用改写 =========
-#     msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
-
-#     if settings.enable_query_rewrite and len(msgs) >= 2:
-#         rewritten = await smartcare_rewrite_query(msgs)
-#         user_query = rewritten
-#     else:
-#         user_query = msgs[-1]["content"]
-
-#     # ========= 然后再进行检索 =========
-#     is_followup_pronoun = bool(_PRONOUN_PAT.search(msgs[-1]["content"]))
-#     contexts = hybrid_retrieve(user_query, idx, emb, settings.top_k)
-#     prompt_msgs = build_prompt([m.dict() for m in req.messages], contexts)
-
-#     data = await smartcare_chat(prompt_msgs)
-#     answer_text = _extract_answer_text(data)
-
-#     # 规范化转义换行
-#     if "\\n" in answer_text and "\n" not in answer_text:
-#         answer_text = answer_text.replace("\\n", "\n")
-
-#     # 把引用也附在文本末尾（逐行）
-#     cites = format_citations(contexts)
-#     lines = [answer_text, "", "References:"]
-#     for i, c in enumerate(cites, 1):
-#         page = f", page {c['page']}" if c.get("page") is not None else ""
-#         lines.append(f"[Source {i}] {c['file']}{page}")
-
-#     return "\n".join(lines)
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)

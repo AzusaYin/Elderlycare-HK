@@ -12,6 +12,8 @@ from sentence_transformers import SentenceTransformer
 from .security import encrypt_bytes, decrypt_bytes
 from .utils import read_markdown_files, infer_page_map
 
+DOCS_DIR = Path("data/docs")
+
 @dataclass
 class Chunk:
     text: str
@@ -132,16 +134,23 @@ def _to_halfwidth(s: str) -> str:
     return "".join(out)
 
 def tokenize(text: str) -> list[str]:
-    # 轻量标准化
     text = _to_halfwidth(text)
+    tokens: list[str] = []
+
+    # 1) 英文/数字词，始终保留
+    tokens += re.findall(r"[A-Za-z0-9_]+", text.lower())
+
+    # 2) CJK 2/3-gram，只对 CJK 段落追加
     if _CJK.search(text):
-        # 2-gram + 3-gram，适配繁中/简中
-        s = re.sub(r"\s+", "", text)
-        toks2 = [s[i:i+2] for i in range(len(s)-1)] if len(s) >= 2 else ([s] if s else [])
-        toks3 = [s[i:i+3] for i in range(len(s)-2)] if len(s) >= 3 else []
-        return toks2 + toks3
-    # 英文/数字：保留原逻辑但更稳健的正则
-    return re.findall(r"[A-Za-z0-9_]+", text.lower())
+        # 只取 CJK 字符做 n-gram，避免把英文一起碾碎
+        cjk_only = "".join(ch for ch in re.sub(r"\s+", "", text) if _CJK.match(ch))
+        if cjk_only:
+            if len(cjk_only) >= 2:
+                tokens += [cjk_only[i:i+2] for i in range(len(cjk_only)-1)]
+            if len(cjk_only) >= 3:
+                tokens += [cjk_only[i:i+3] for i in range(len(cjk_only)-2)]
+    return tokens
+
 
 # --- Ingestion ---
 def ingest_corpus(docs_dir: str, index_dir: str) -> Tuple[int, int]:
@@ -219,30 +228,32 @@ def _load_penalty() -> dict:
         return _PENALTY or {}
 
 def hybrid_retrieve(query: str, index: Index, embedder: Embedder, k: int, *, soft: bool=False) -> List[Dict]:
-    import re
-    _CJK = re.compile(r"[\u4e00-\u9fff]")
-
-    def _tokenize_q(q: str) -> List[str]:
-        # 轻量规范：全角->半角，压缩空白
+    def _tokenize_q(q: str) -> list[str]:
         def _to_halfwidth(s: str) -> str:
             out = []
             for ch in s:
                 code = ord(ch)
-                if code == 0x3000:  # 全角空格
-                    code = 0x20
-                elif 0xFF01 <= code <= 0xFF5E:
-                    code -= 0xFEE0
+                if code == 0x3000: code = 0x20
+                elif 0xFF01 <= code <= 0xFF5E: code -= 0xFEE0
                 out.append(chr(code))
             return re.sub(r"\s+", " ", "".join(out)).strip()
 
         s = _to_halfwidth(q)
+        toks: list[str] = []
+
+        # 英文/数字词，始终加入
+        toks += re.findall(r"[A-Za-z0-9_]+", s.lower())
+
+        # 若含 CJK，再追加 CJK n-gram（只对 CJK 字符做）
         if _CJK.search(s):
-            s = s.replace(" ", "")
-            toks2 = [s[i:i+2] for i in range(len(s)-1)] if len(s) >= 2 else ([s] if s else [])
-            toks3 = [s[i:i+3] for i in range(len(s)-2)] if len(s) >= 3 else []
-            return toks2 + toks3
-        # 英文/数字：单词正则更稳
-        return re.findall(r"[A-Za-z0-9_]+", s.lower())
+            cjk_only = "".join(ch for ch in s.replace(" ", "") if _CJK.match(ch))
+            if cjk_only:
+                if len(cjk_only) >= 2:
+                    toks += [cjk_only[i:i+2] for i in range(len(cjk_only)-1)]
+                if len(cjk_only) >= 3:
+                    toks += [cjk_only[i:i+3] for i in range(len(cjk_only)-2)]
+        return toks
+
 
     is_cjk = bool(_CJK.search(query))
     q_emb = embedder.encode([query])

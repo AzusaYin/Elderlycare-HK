@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     enable_query_rewrite: bool = True
 
     # Retrieval gating
-    min_vec_sim: float = 0.4    # 余弦相似度(Inner Product, 归一化后)
-    min_bm25_score: float = 5   # BM25 最小分（0~几十，语料而定）
+    min_vec_sim: float = 0.35    # 余弦相似度(Inner Product, 归一化后)
+    min_bm25_score: float = 4   # BM25 最小分（0~几十，语料而定）
     min_sources_required: int = 1  # 需要至少 N 个命中的来源才认为“找到了”
 
     # Security
