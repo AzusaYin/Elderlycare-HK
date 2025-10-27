@@ -325,6 +325,11 @@ app.include_router(admin_docs_router)
 _LOG_DIR = Path("data/logs")
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _USAGE_LOG = _LOG_DIR / "chat_usage.jsonl"
+DEBUG_CLARIFY = True  # 临时打开；确认无误后改为 False
+
+def _dbg(*a):
+    if DEBUG_CLARIFY:
+        print("[clarify]", *a)
 
 def _append_jsonl_safe(path: Path, obj: dict):
     try:
@@ -410,34 +415,38 @@ ALIASES = {
 # 用“非字母数字”前后视图替代 \b，避免在中文里失效
 # (?<![A-Za-z0-9]) …… (?![A-Za-z0-9])
 _ENTITY_EXTRACT_RE = re.compile(
-    r"(?<![A-Za-z0-9])("                                   # 英文正式名稱（首字母大寫的多詞短語 + 後綴）
-    r"[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,7}\s"
-    r"(?:Allowance|Scheme|Program|Programme|Manual|Handbook|Guide|Guidance\s+Notes|Notes|Policy|"
-    r"Ordinance|Regulation|Circular|Arrangement|Grant|Service|Subvention|System|Framework|Code|"
-    r"Plan|Charter|Protocol|Directive|Guideline)s?"         # 允許可選複數 s
+    r"(?<![A-Za-z0-9])("  # ---- 英文正式名稱（多詞短語 + 特定後綴，不匹配單詞本身）----
+    # 例如：Old Age Allowance, Disability Allowance, Social Welfare Department Manual ...
+    r"(?:Old\s+Age\s+Allowance|Old\s+Age\s+Living\s+Allowance|Disability\s+Allowance|"
+    r"Comprehensive\s+Social\s+Security\s+Assistance|Lump\s+Sum\s+Grant\s+Subvention\s+System|"
+    r"Lump\s+Sum\s+Grant|Infirmary\s+Care\s+Supplement|Foster\s+Care\s+Allowance|"
+    r"Emergency\s+Foster\s+Care\s+Allowance)"
     r")(?![A-Za-z0-9])"
-    r"|(?:Old\s+Age\s+Allowance|Old\s+Age\s+Living\s+Allowance|Disability\s+Allowance|"
-    r"Comprehensive\s+Social\s+Security\s+Assistance)"      # 常見英文全名
-    r"|(?:OAA|OALA|CSSA|DA|LSG|LSGSS)"                      # 常見英文縮寫
+    r"|(?:OAA|OALA|CSSA|DA|LSG|LSGSS)"  # 常見英文縮寫
     r"|(?:長者生活津貼|高齡津貼|老年津貼|傷殘津貼|"
-    r"綜合社會保障援助|資助福利服務|統一撥款|資助手冊|撥款制度|"
-    r"政策|計劃|津貼|手冊|指引|通告|規例|條例|方案|制度|安排)"  # 繁中後綴/同義詞擴充
+    r"綜合社會保障援助|資助福利服務|統一撥款|整筆撥款|整筆撥款津助制度|統一撥款制度|統一撥款資助|整筆資助|"
+    r"資助計劃|援助計劃|補助金|補貼|津貼計劃|津貼安排|"
+    r"政策|計劃|手冊|指引|通告|規例|條例|方案|制度|安排)"
     , re.I
 )
 
 # 這個比上面的稍窄，用於你的“實體提示/澄清”檢測（不需要過多干擾詞）
+# 仅示例，请并入你现有的 _ENTITY_PAT：
 _ENTITY_PAT = re.compile(
-    r"(?<![A-Za-z0-9])("
-    r"[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,6}\s"
-    r"(?:Allowance|Scheme|Program|Programme|Manual|Handbook|Policy|Ordinance|Regulation|"
-    r"Guideline|Circular|Grant|Service|Subvention|System)s?"
-    r")(?![A-Za-z0-9])"
-    r"|(?:Old\s+Age\s+Allowance|Old\s+Age\s+Living\s+Allowance|Operating\s+Subvented\s+Welfare|"
-    r"LSG\s+Subvention\s+Manual|Disability\s+Allowance|Comprehensive\s+Social\s+Security\s+Assistance)"
-    r"|(?:OAA|OALA|CSSA|DA|LSG|LSGSS)"
-    r"|(?:長者生活津貼|高齡津貼|老年津貼|傷殘津貼|資助福利服務|統一撥款|資助手冊|"
-    r"撥款制度|計劃|津貼|手冊|指引|通告|規例|條例|制度)"
-    , re.I
+    r"(?:"
+    # ---- English concrete entities (no generic words here!) ----
+    r"Old Age Living Allowance|OALA|Old Age Allowance|OAA|"
+    r"Disability Allowance|DA|"
+    r"Comprehensive Social Security Assistance|CSSA|"
+    r"Lump Sum Grant Subvention System|LSG Subvention System|LSGSS|Lump Sum Grant|LSG|"
+    r"Infirmary Care Supplement|Foster Care Allowance|Emergency Foster Care Allowance"
+    r"|"
+    # ---- 中文实体（保留你现有 + 我们之前补的）----
+    r"長者生活津貼|高齡津貼|老年津貼|傷殘津貼|綜合社會保障援助|"
+    r"整筆撥款|整筆撥款津助制度|統一撥款制度|統一撥款資助|整筆資助|"
+    r"資助計劃|援助計劃|補助金|補貼|津貼計劃|津貼安排"
+    r")",
+    re.I,
 )
 
 # --- Helpers for zh-Hant queries ---
@@ -456,9 +465,13 @@ def _expand_aliases_zh(q: str) -> str:
     """把繁中的俗称/简称扩成 (A OR B OR 英文名)；你可把表慢慢补充起来"""
     table = {
         "生果金": ["高齡津貼", "Old Age Allowance", "OAA"],
-        "綜援": ["綜合社會保障援助", "Comprehensive Social Security Assistance", "CSSA"],
+        "綜援":   ["綜合社會保障援助", "Comprehensive Social Security Assistance", "CSSA"],
+
+        # 🔽 新增：LSG/LSGSS 别名族
+        "整筆撥款":           ["統一撥款", "Lump Sum Grant", "LSG"],
+        "整筆撥款津助制度":   ["統一撥款制度", "Lump Sum Grant Subvention System", "LSG Subvention System", "LSGSS", "LSG"],
+        "統一撥款制度":       ["Lump Sum Grant Subvention System", "LSG Subvention System", "LSGSS", "LSG"],
     }
-    # 先处理繁中文本
     for k, vs in table.items():
         if k in q:
             q = q.replace(k, f"({ ' OR '.join([k] + vs) })")
@@ -545,42 +558,56 @@ _GENERIC_Q_RE = re.compile(
 
 def _looks_specific(q: str, contexts: list[dict]) -> bool:
     """
-    返回 True 表示“这个查询已经足够具体”，不要再触发澄清。
-    判据：
-      - 含《》书名号（通常是确指标题）
-      - 命中你定义的实体正则（政策/津贴名等）
-      - 在 topN 候选文本里出现了原样短语（严格包含）
+    “已足够具体”的判定：
+      1) 命中实体正则（政策/津贴/制度等具体名）。
+      2) 含《》書名號。
+      3) 中文查詢：CJK 長度 ≥ 6 且 以專有尾詞結尾（津貼/補助/撥款/制度/計劃/指引/服務/津貼計劃/補助金）。
+    不再用「上下文出现该短语」作为依据。
     """
-    qn = _norm_for_entity(q)
-    if "《" in qn and "》" in qn: return True
-    if _ENTITY_PAT.search(qn):    return True
-    inner = None
-    m = re.search(r"《(.+?)》", qn)
-    if m: inner = m.group(1).strip()
-    phrase = (inner or qn).strip()
-    if phrase:
-        for c in contexts[:10]:
-            t = (c.get("text") or (c.get("meta") or {}).get("text") or "")
-            if t and phrase in t:
-                return True
+    qn = _norm_for_entity(q or "")
+    if "《" in qn and "》" in qn:
+        _dbg("looks_specific: booktitle")
+        return True
+    if _ENTITY_PAT.search(qn):
+        _dbg("looks_specific: entity")
+        return True
+
+    s = _cjk_only(qn)
+    if len(s) >= 6 and (
+        any(s.endswith(w) for w in ("津貼", "補助", "撥款", "制度", "計劃", "指引", "服務"))
+        or s.endswith("津貼計劃") or s.endswith("補助金")
+    ):
+        _dbg("looks_specific: zh length&suffix")
+        return True
+
+    _dbg("looks_specific: False")
     return False
 
 def _tokenize_simple(s: str) -> list[str]:
     return [t for t in re.findall(r"\w+|[\u4e00-\u9fff]", s or "") if t.strip()]
 
 def _is_ambiguous_heuristic(q: str) -> bool:
-    q = (q or "").strip()
-    if not q:
+    """
+    仅在非常“短/虚”的情况下返回 True：
+      - 空/全是空白
+      - 英文长度 < 4 且全是问句词 (what/why/how等)
+      - 中文 CJK 长度 ≤ 2 的单字问句
+    不再因为包含“政策/津貼”等词就直接判泛。
+    """
+    if not q or not q.strip():
         return True
-    toks = _tokenize_simple(q)
-    if len(toks) <= _MIN_TOKENS:
+
+    s = q.strip()
+    # 英文过短问句
+    sl = s.lower()
+    if len(sl) <= 3 and sl in {"?", "hi", "hey"}:
         return True
-    uniq_ratio = len(set(toks)) / max(1, len(toks))
-    if uniq_ratio < 0.5:
+
+    # 中文极短
+    cz = _cjk_only(s)
+    if cz and len(cz) <= 2:
         return True
-    has_named = bool(re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b", q))
-    if _GENERIC_Q_RE.search(q) and not has_named:
-        return True
+
     return False
 
 # 语义模板（极小集合，捕捉“泛问/扩写/解释一下”这类）
@@ -608,7 +635,7 @@ def _ensure_generic_emb() -> np.ndarray:
             _GENERIC_EMB = _GENERIC_EMB.reshape(1, -1)
     return _GENERIC_EMB
 
-def _is_ambiguous_semantic(q: str, thr: float = 0.78) -> bool:
+def _is_ambiguous_semantic(q: str, thr: float = 0.82) -> bool:
     q = (q or "").strip()
     if not q:
         return True
@@ -618,14 +645,78 @@ def _is_ambiguous_semantic(q: str, thr: float = 0.78) -> bool:
     sims = (G @ qe)  # 余弦相似度
     return float(np.max(sims)) >= thr
 
-def _should_clarify_smart(user_query: str) -> bool:
-    # A：启发式先判
-    if _is_ambiguous_heuristic(user_query):
-        return True
-    # B：与“泛问模板”相似则判模糊
-    if _is_ambiguous_semantic(user_query):
+_GENERIC_HEADS_ZH = {"津貼", "政策", "制度", "計劃", "手冊", "服務", "指引"}
+
+def _cjk_only(s: str) -> str:
+    return "".join(ch for ch in s if "\u4e00" <= ch <= "\u9fff")
+
+def _contains_generic_head_zh(q: str) -> bool:
+    """
+    只有當查詢“很短”(≤4個 CJK字) 且 恰好是常見泛詞 或 以泛詞結尾(如“介紹津貼”)時，才視為泛問。
+    目的是避免把長而具體的中文名詞短語誤判為泛問。
+    """
+    s = _cjk_only((q or "").strip())
+    if not s:
+        return False
+    if len(s) <= 4 and (s in _GENERIC_HEADS_ZH or any(s.endswith(w) for w in _GENERIC_HEADS_ZH)):
         return True
     return False
+
+# ===== EN generic heads =====
+_GENERIC_HEADS_EN = {
+    "allowance", "allowances",
+    "policy", "policies",
+    "scheme", "schemes",
+    "program", "programs", "programme", "programmes",
+    "service", "services",
+    "manual", "handbook", "guideline", "guidelines",
+}
+_GENERIC_HEADS_EN_RE = re.compile(r"\b(" + "|".join(sorted(_GENERIC_HEADS_EN)) + r")\b", re.I)
+
+def _contains_generic_head_en(q: str) -> bool:
+    qn = _norm_for_entity(q or "").lower()
+    qn = re.sub(r"[^a-z0-9\s]", " ", qn)  # 去标点
+    has_generic = bool(_GENERIC_HEADS_EN_RE.search(qn))
+    ent = bool(_ENTITY_PAT.search(qn))    # 注意此处 _ENTITY_PAT 已不含 generic
+    return has_generic and not ent
+
+# ===== ZH generic heads (保守) =====
+_GENERIC_HEADS_ZH = {"津貼", "政策", "制度", "計劃", "手冊", "服務", "指引", "補助", "補貼"}
+
+def _cjk_only(s: str) -> str:
+    return "".join(ch for ch in s if "\u4e00" <= ch <= "\u9fff")
+
+def _contains_generic_head_zh(q: str) -> bool:
+    """
+    只有當查詢“很短”(≤4個 CJK字) 且 恰好是常見泛詞 或 以泛詞結尾(如“介紹津貼”)時才視為泛問。
+    目標：避免將長中文名詞短語誤判為泛問。
+    """
+    s = _cjk_only((q or "").strip())
+    if not s:
+        return False
+    short = len(s) <= 4 and (s in _GENERIC_HEADS_ZH or any(s.endswith(w) for w in _GENERIC_HEADS_ZH))
+    ent = bool(_ENTITY_PAT.search(_norm_for_entity(q or "")))
+    _dbg("ZH heads:", short, "entity:", ent, "s=", s)
+    return short and not ent
+
+def _should_clarify_smart(user_query: str, lang: str | None = None) -> bool:
+    """
+    综合启发式与语义判断。
+    对中文（zh-Hant）使用更严格阈值，减少误判。
+    """
+    # 启发式判断：太短/太泛
+    if _is_ambiguous_heuristic(user_query):
+        _dbg("heuristic=True")
+        return True
+
+    # 语言自适应阈值（中文更严格）
+    thr = 0.82
+    if lang == "zh-Hant":
+        thr = 0.86
+
+    amb = _is_ambiguous_semantic(user_query, thr=thr)
+    _dbg("semantic:", amb, "thr:", thr)
+    return amb
 
 def _clarify_question(user_query: str, lang: str | None) -> str:
     """
@@ -649,7 +740,6 @@ def _clarify_question(user_query: str, lang: str | None) -> str:
 
 def _clarify_question_smart(user_query: str, lang: str | None, idx: "Index", emb: "Embedder") -> str:
     q = (user_query or "").strip()
-    # 先做候選：比如 "allowance", "policy", "scheme", "津貼", "政策"
     keywords = ["allowance", "policy", "scheme", "manual", "programme", "津貼", "政策", "計劃", "手冊"]
     need_list = any(kw in q.lower() for kw in keywords) or _is_ambiguous_semantic(q)
 
@@ -663,7 +753,15 @@ def _clarify_question_smart(user_query: str, lang: str | None, idx: "Index", emb
                 opts = ", ".join(cands[:4])
                 return f'Your question (“{q}”) is a bit broad. Are you asking about {opts}, or something else?'
 
-    # 候選空時，回退到原來的通用提示
+        # 🔽 兜底候選（没有抽到实体时仍然给出典型选项）
+        fallback_en = ["Old Age Allowance (OAA)", "Old Age Living Allowance (OALA)", "Disability Allowance (DA)"]
+        fallback_zh = ["高齡津貼（OAA）", "長者生活津貼（OALA）", "傷殘津貼（DA）"]
+        if lang == "zh-Hant":
+            return f"你的問題較為籠統（「{q}」）。你是在問 {fallback_zh[0]}、{fallback_zh[1]} 或 {fallback_zh[2]}，還是其他？"
+        else:
+            return f'Your question (“{q}”) is a bit broad. Are you asking about {fallback_en[0]}, {fallback_en[1]}, or {fallback_en[2]}?'
+
+    # 候選空且不需要列表時，退回通用提示
     return _clarify_question(user_query, lang)
 
 def _expand_aliases(text: str) -> str:
@@ -1166,8 +1264,22 @@ async def chat(req: ChatRequest, _auth=Depends(require_bearer)):
         else:
             return ChatAnswer(answer=text, citations=[])
     
-    # === 再檢查是否過於籠統（但已有來源） ===
-    if _should_clarify_smart(user_query) and not _looks_specific(user_query, contexts):
+    # === Clarification gate (language-aware) ===
+    # === Clarification gate (language-aware) ===
+    if req.language == "en":
+        amb_lang = _contains_generic_head_en(user_query)   # allowance/policy/scheme...（正则词边界）
+    else:
+        amb_lang = _contains_generic_head_zh(user_query)   # 中文极保守短泛词
+
+    amb_smart = _should_clarify_smart(user_query, req.language)
+    is_specific = _looks_specific(user_query, contexts)
+
+    # ✅ 关键：英文只要命中“泛词”，一律视为“不具体”，避免被实体误判覆盖
+    if req.language == "en" and amb_lang:
+        is_specific = False
+
+    is_amb = amb_smart | amb_lang  # 任一为真即认为“模糊”
+    if is_amb and not is_specific:
         text = _clarify_question_smart(user_query, req.language, idx, emb)
         if req.stream:
             async def event_stream():
@@ -1409,16 +1521,23 @@ def _to_halfwidth(s: str) -> str:
     return "".join(out)
 
 def tokenize(text: str) -> list[str]:
-    # 轻量标准化
     text = _to_halfwidth(text)
+    tokens: list[str] = []
+
+    # 1) 英文/数字词，始终保留
+    tokens += re.findall(r"[A-Za-z0-9_]+", text.lower())
+
+    # 2) CJK 2/3-gram，只对 CJK 段落追加
     if _CJK.search(text):
-        # 2-gram + 3-gram，适配繁中/简中
-        s = re.sub(r"\s+", "", text)
-        toks2 = [s[i:i+2] for i in range(len(s)-1)] if len(s) >= 2 else ([s] if s else [])
-        toks3 = [s[i:i+3] for i in range(len(s)-2)] if len(s) >= 3 else []
-        return toks2 + toks3
-    # 英文/数字：保留原逻辑但更稳健的正则
-    return re.findall(r"[A-Za-z0-9_]+", text.lower())
+        # 只取 CJK 字符做 n-gram，避免把英文一起碾碎
+        cjk_only = "".join(ch for ch in re.sub(r"\s+", "", text) if _CJK.match(ch))
+        if cjk_only:
+            if len(cjk_only) >= 2:
+                tokens += [cjk_only[i:i+2] for i in range(len(cjk_only)-1)]
+            if len(cjk_only) >= 3:
+                tokens += [cjk_only[i:i+3] for i in range(len(cjk_only)-2)]
+    return tokens
+
 
 # --- Ingestion ---
 def ingest_corpus(docs_dir: str, index_dir: str) -> Tuple[int, int]:
@@ -1464,6 +1583,32 @@ def ingest_corpus(docs_dir: str, index_dir: str) -> Tuple[int, int]:
 
     return len(docs), len(all_chunks)
 
+def exact_phrase_fallback(query: str, limit=3):
+    q = (query or "").strip()
+    if len(q) < 8:
+        return []
+    pat = re.escape(q)
+    hits = []
+    for p in _DOCS_DIR.glob("**/*.md"):
+        try:
+            txt = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if not m:
+            continue
+        s = max(0, m.start() - 300); e = min(len(txt), m.end() + 300)
+        hits.append({
+            "id": f"{p.name}::0",
+            "file": p.name,
+            "page": None,
+            "score": 1.0,
+            "text": txt[s:e]
+        })
+        if len(hits) >= limit:
+            break
+    return hits
+
 # --- Retrieval ---
 from .settings import settings
 
@@ -1496,30 +1641,31 @@ def _load_penalty() -> dict:
         return _PENALTY or {}
 
 def hybrid_retrieve(query: str, index: Index, embedder: Embedder, k: int, *, soft: bool=False) -> List[Dict]:
-    import re
-    _CJK = re.compile(r"[\u4e00-\u9fff]")
-
-    def _tokenize_q(q: str) -> List[str]:
-        # 轻量规范：全角->半角，压缩空白
+    def _tokenize_q(q: str) -> list[str]:
         def _to_halfwidth(s: str) -> str:
             out = []
             for ch in s:
                 code = ord(ch)
-                if code == 0x3000:  # 全角空格
-                    code = 0x20
-                elif 0xFF01 <= code <= 0xFF5E:
-                    code -= 0xFEE0
+                if code == 0x3000: code = 0x20
+                elif 0xFF01 <= code <= 0xFF5E: code -= 0xFEE0
                 out.append(chr(code))
             return re.sub(r"\s+", " ", "".join(out)).strip()
 
         s = _to_halfwidth(q)
+        toks: list[str] = []
+
+        # 英文/数字词，始终加入
+        toks += re.findall(r"[A-Za-z0-9_]+", s.lower())
+
+        # 若含 CJK，再追加 CJK n-gram（只对 CJK 字符做）
         if _CJK.search(s):
-            s = s.replace(" ", "")
-            toks2 = [s[i:i+2] for i in range(len(s)-1)] if len(s) >= 2 else ([s] if s else [])
-            toks3 = [s[i:i+3] for i in range(len(s)-2)] if len(s) >= 3 else []
-            return toks2 + toks3
-        # 英文/数字：单词正则更稳
-        return re.findall(r"[A-Za-z0-9_]+", s.lower())
+            cjk_only = "".join(ch for ch in s.replace(" ", "") if _CJK.match(ch))
+            if cjk_only:
+                if len(cjk_only) >= 2:
+                    toks += [cjk_only[i:i+2] for i in range(len(cjk_only)-1)]
+                if len(cjk_only) >= 3:
+                    toks += [cjk_only[i:i+3] for i in range(len(cjk_only)-2)]
+        return toks
 
     is_cjk = bool(_CJK.search(query))
     q_emb = embedder.encode([query])
@@ -1769,7 +1915,7 @@ class Settings(BaseSettings):
     top_k: int = 5
 
     # Embeddings
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_device: str = "cpu"  # set to "cuda" if available
 
     # HKUST LLM API
@@ -1783,7 +1929,7 @@ class Settings(BaseSettings):
 
     # Retrieval gating
     min_vec_sim: float = 0.35    # 余弦相似度(Inner Product, 归一化后)
-    min_bm25_score: float = 4   # BM25 最小分（0~几十，语料而定）
+    min_bm25_score: float = 3.5   # BM25 最小分（0~几十，语料而定）
     min_sources_required: int = 1  # 需要至少 N 个命中的来源才认为“找到了”
 
     # Security
@@ -1805,8 +1951,6 @@ import re
 from pathlib import Path
 from typing import List, Dict
 
-# —— 新：更鲁棒的多样式页码匹配 —— 
-# 说明：
 #  - 每个样式只有一个捕获组是页码数字；下面的 infer_page_map 会找出命中的那个分组
 _PAGE_PATTERNS = [
     r"(?:^|\n)\s*Page\s*(\d+)\s*(?:\n|$)",            # Page 12
@@ -2118,6 +2262,16 @@ curl -X POST http://localhost:8001/chat \
     "stream": false
   }' -w '\n'
 ```
+
+curl -X POST http://localhost:8001/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer K3SYw0UNdctORRP2gpSaPcRMLgrXgL_q7tS7MT5PirQ" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What about Eligibility for Operating Subvented Welfare?"}
+    ],
+    "stream": false
+  }' -w '\n'
 
 ### Stream (raw lines)
 ```bash

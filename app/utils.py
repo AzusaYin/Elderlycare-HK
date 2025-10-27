@@ -2,8 +2,6 @@ import re
 from pathlib import Path
 from typing import List, Dict
 
-# —— 新：更鲁棒的多样式页码匹配 —— 
-# 说明：
 #  - 每个样式只有一个捕获组是页码数字；下面的 infer_page_map 会找出命中的那个分组
 _PAGE_PATTERNS = [
     r"(?:^|\n)\s*Page\s*(\d+)\s*(?:\n|$)",            # Page 12

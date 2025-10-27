@@ -61,6 +61,16 @@ curl -X POST http://localhost:8001/chat \
   }' -w '\n'
 ```
 
+curl -X POST http://localhost:8001/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer K3SYw0UNdctORRP2gpSaPcRMLgrXgL_q7tS7MT5PirQ" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What about Eligibility for Operating Subvented Welfare?"}
+    ],
+    "stream": false
+  }' -w '\n'
+
 ### Stream (raw lines)
 ```bash
 curl -N -X POST http://localhost:8001/chat \

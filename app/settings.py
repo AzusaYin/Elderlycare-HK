@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     top_k: int = 5
 
     # Embeddings
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_device: str = "cpu"  # set to "cuda" if available
 
     # HKUST LLM API
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # Retrieval gating
     min_vec_sim: float = 0.35    # 余弦相似度(Inner Product, 归一化后)
-    min_bm25_score: float = 4   # BM25 最小分（0~几十，语料而定）
+    min_bm25_score: float = 3.5   # BM25 最小分（0~几十，语料而定）
     min_sources_required: int = 1  # 需要至少 N 个命中的来源才认为“找到了”
 
     # Security

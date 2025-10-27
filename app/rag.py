@@ -196,6 +196,32 @@ def ingest_corpus(docs_dir: str, index_dir: str) -> Tuple[int, int]:
 
     return len(docs), len(all_chunks)
 
+def exact_phrase_fallback(query: str, limit=3):
+    q = (query or "").strip()
+    if len(q) < 8:
+        return []
+    pat = re.escape(q)
+    hits = []
+    for p in _DOCS_DIR.glob("**/*.md"):
+        try:
+            txt = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if not m:
+            continue
+        s = max(0, m.start() - 300); e = min(len(txt), m.end() + 300)
+        hits.append({
+            "id": f"{p.name}::0",
+            "file": p.name,
+            "page": None,
+            "score": 1.0,
+            "text": txt[s:e]
+        })
+        if len(hits) >= limit:
+            break
+    return hits
+
 # --- Retrieval ---
 from .settings import settings
 
@@ -253,7 +279,6 @@ def hybrid_retrieve(query: str, index: Index, embedder: Embedder, k: int, *, sof
                 if len(cjk_only) >= 3:
                     toks += [cjk_only[i:i+3] for i in range(len(cjk_only)-2)]
         return toks
-
 
     is_cjk = bool(_CJK.search(query))
     q_emb = embedder.encode([query])
