@@ -1013,7 +1013,7 @@ async def chat(req: ChatRequest, _auth=Depends(require_bearer)):
         prompt_msgs.insert(0, {
             "role": "system",
             "content": (
-                "Please answer in clear, short English sentences suitable for older adults. "
+                "Please answer in clear, short English sentences within 100 words suitable for older adults. "
                 "Avoid jargon and keep the response friendly."
             )
         })

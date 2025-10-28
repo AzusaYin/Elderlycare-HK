@@ -173,15 +173,6 @@ export default function AdminDocs() {
                 <span className="opacity-70">（up {metrics7d.up} / down {metrics7d.down}, n={metrics7d.total}）</span>
               </div>
             )}
-
-            {usage && (
-              <div className="mt-0.5">
-                <span className="text-gray-700">Usage(7d): </span>
-                <b>{usage.total}</b> reqs，no-hit <b>{usage.nohit}</b>，clarified <b>{usage.clarified}</b>，
-                avg {usage.avg_duration_ms ? `${Math.round(usage.avg_duration_ms)} ms` : "–"}，
-                P95 {usage.p95_duration_ms ? `${Math.round(usage.p95_duration_ms)} ms` : "–"}
-              </div>
-            )}
           </div>
         </div>
 

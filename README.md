@@ -83,6 +83,22 @@ curl -N -X POST http://localhost:8001/chat \
   }' -w '\n'
 ```
 
+hexdump -C -n 64 data/index/meta.json
+hexdump -C -n 64 data/index/bm25.json
+hexdump -C -n 32 data/index/faiss.index
+
+python - <<'PY'
+from app.security import decrypt_bytes
+p = "data/index/meta.json"
+print(decrypt_bytes(open(p,"rb").read())[:200])
+PY
+
+python - <<'PY'
+from app.security import decrypt_bytes
+p = "data/index/bm25.json"
+print(decrypt_bytes(open(p,"rb").read())[:200])
+PY
+
 ## Notes
 - You should better run ```scripts/tune_thresholds.py``` once per day to improve the performance of chat robot.
 - Citations list the file name and page if detectable from markdown. If your MD lacks page markers, the backend still cites the file.
