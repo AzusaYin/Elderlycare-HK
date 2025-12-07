@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Feature flags
     enable_bm25: bool = True
     enable_query_rewrite: bool = True
+    enable_incremental_index: bool = True  # 启用增量索引（上传文件时只索引新文件）
 
     # Retrieval gating
     min_vec_sim: float = 0.35    # 余弦相似度(Inner Product, 归一化后)
