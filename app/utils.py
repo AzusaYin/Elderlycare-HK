@@ -1,6 +1,11 @@
 import re
 from pathlib import Path
 from typing import List, Dict
+try:
+    import fitz  # PyMuPDF
+    HAS_PDF = True
+except ImportError:
+    HAS_PDF = False
 
 #  - 每个样式只有一个捕获组是页码数字；下面的 infer_page_map 会找出命中的那个分组
 _PAGE_PATTERNS = [
@@ -16,15 +21,59 @@ _PAGE_PATTERNS = [
 ]
 _PAGE_RE = re.compile("|".join(f"(?:{p})" for p in _PAGE_PATTERNS), re.IGNORECASE)
 
+def read_pdf_file(pdf_path: Path) -> str:
+    """
+    从PDF文件中提取文本，保留页码标记
+    使用PyMuPDF (fitz)提取，每页前添加 "Page N" 标记
+    """
+    if not HAS_PDF:
+        raise ImportError("PyMuPDF not installed. Install with: pip install PyMuPDF")
+
+    try:
+        doc = fitz.open(str(pdf_path))
+        pages_text = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
+            # 在每页开头添加页码标记（与现有的页码推断模式兼容）
+            pages_text.append(f"Page {page_num + 1}\n{text}")
+
+        doc.close()
+        return "\n\n".join(pages_text)
+    except Exception as e:
+        print(f"[ERROR] Failed to extract PDF {pdf_path}: {e}")
+        raise
+
+
 def read_markdown_files(docs_dir: str) -> List[Dict]:
-    paths = list(Path(docs_dir).glob("**/*.md")) + list(Path(docs_dir).glob("**/*.markdown"))
+    """
+    读取文档目录中的所有Markdown和PDF文件
+    返回格式: [{"path": "...", "text": "..."}, ...]
+    """
+    # 收集Markdown文件
+    md_paths = list(Path(docs_dir).glob("**/*.md")) + list(Path(docs_dir).glob("**/*.markdown"))
+    # 收集PDF文件
+    pdf_paths = list(Path(docs_dir).glob("**/*.pdf")) if HAS_PDF else []
+
     docs = []
-    for p in paths:
+
+    # 处理Markdown文件
+    for p in md_paths:
         try:
             text = p.read_text(encoding="utf-8", errors="ignore")
             docs.append({"path": str(p), "text": text})
         except Exception as e:
-            print(f"[WARN] Failed to read {p}: {e}")
+            print(f"[WARN] Failed to read Markdown {p}: {e}")
+
+    # 处理PDF文件
+    for p in pdf_paths:
+        try:
+            text = read_pdf_file(p)
+            docs.append({"path": str(p), "text": text})
+        except Exception as e:
+            print(f"[WARN] Failed to read PDF {p}: {e}")
+
     return docs
 
 def infer_page_map(md_text: str) -> List[Dict]:
