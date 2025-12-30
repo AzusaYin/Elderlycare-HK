@@ -52,7 +52,13 @@ def get_status():
 @router.get("/list", dependencies=[Depends(require_bearer)])
 def list_docs():
     items = []
-    for p in sorted(list(DOCS_DIR.glob("*.md")) + list(DOCS_DIR.glob("*.markdown"))):
+    # 列出所有支持的文档格式：Markdown和PDF
+    all_files = (
+        list(DOCS_DIR.glob("*.md")) +
+        list(DOCS_DIR.glob("*.markdown")) +
+        list(DOCS_DIR.glob("*.pdf"))
+    )
+    for p in sorted(all_files):
         items.append({
             "filename": p.name,
             "size": p.stat().st_size,
@@ -63,8 +69,8 @@ def list_docs():
 @router.post("/upload", dependencies=[Depends(require_bearer)])
 async def upload_doc(file: UploadFile = File(...)):
     name = (file.filename or "").lower()
-    if not (name.endswith(".md") or name.endswith(".markdown")):  # 如需同时支持 pdf，可加 or name.endswith(".pdf")
-        raise HTTPException(400, "Only Markdown (.md/.markdown) is supported")
+    if not (name.endswith(".md") or name.endswith(".markdown") or name.endswith(".pdf")):
+        raise HTTPException(400, "Only Markdown (.md/.markdown) and PDF (.pdf) are supported")
     
     tmp_path = TMP_DIR / (file.filename + ".part")
     with tmp_path.open("wb") as f:
@@ -100,14 +106,18 @@ async def delete_doc(filename: str):
         DOCS_DIR / filename,
         DOCS_DIR / (filename if filename.lower().endswith(".md") else filename + ".md"),
         DOCS_DIR / (filename if filename.lower().endswith(".markdown") else filename + ".markdown"),
+        DOCS_DIR / (filename if filename.lower().endswith(".pdf") else filename + ".pdf"),
     ]
 
-    # 如果都不存在，尝试在目录里做一次“大小写不敏感”/近似匹配
+    # 如果都不存在，尝试在目录里做一次"大小写不敏感"/近似匹配
     path = next((p for p in candidates if p.exists()), None)
     if path is None:
         low = filename.lower()
         for p in DOCS_DIR.glob("*"):
-            if p.name.lower() == low or p.name.lower() == (low + ".md") or p.name.lower() == (low + ".markdown"):
+            if (p.name.lower() == low or
+                p.name.lower() == (low + ".md") or
+                p.name.lower() == (low + ".markdown") or
+                p.name.lower() == (low + ".pdf")):
                 path = p
                 break
 

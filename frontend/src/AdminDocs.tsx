@@ -31,7 +31,7 @@ type Status = { status: string; note?: string; last_built?: number };
 // 统一把 /chat 结尾去掉，避免拼接成 /chat/docs/...
 const API_BASE = (import.meta.env.VITE_BACKEND_URL || "http://localhost:8001").replace(/\/chat$/i, "");
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
-const MD_ACCEPT = ".md,.markdown,text/markdown";
+const ACCEPT_FILES = ".md,.markdown,.pdf,text/markdown,application/pdf";
 
 /** ============ Component ============ */
 export default function AdminDocs() {
@@ -85,11 +85,12 @@ export default function AdminDocs() {
     const f = e.target.files?.[0];
     if (!f) return;
 
-    // 前端兜底校验：仅允许 .md / .markdown
-    const nameOk = /\.(md|markdown)$/i.test(f.name);
-    const mimeOk = (f.type || "").toLowerCase().includes("markdown");
+    // 前端兜底校验：允许 .md / .markdown / .pdf
+    const nameOk = /\.(md|markdown|pdf)$/i.test(f.name);
+    const mimeOk = (f.type || "").toLowerCase().includes("markdown") ||
+                   (f.type || "").toLowerCase().includes("pdf");
     if (!nameOk && !mimeOk) {
-      alert("僅支援上傳 Markdown 檔（.md / .markdown）");
+      alert("僅支援上傳 Markdown 檔（.md / .markdown）和 PDF 檔（.pdf）");
       e.currentTarget.value = ""; // 清空選擇
       return;
     }
@@ -134,7 +135,7 @@ export default function AdminDocs() {
               <span>选择文件</span>
               <input
                 type="file"
-                accept={MD_ACCEPT}
+                accept={ACCEPT_FILES}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   setFileName(f?.name || "");
